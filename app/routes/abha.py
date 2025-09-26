@@ -1,25 +1,18 @@
 from fastapi import APIRouter, HTTPException, Depends, Header
+from sqlalchemy.orm import Session
 import pandas as pd
 from jose import jwt
 from datetime import datetime, timedelta
 from typing import Optional
-from app.models import ABHAUser, ABHALogin, ABHALoginResponse, TranslationHistory
-import json
 import os
+from app.models import ABHAUser, ABHALogin, ABHALoginResponse, User, TranslationHistory, TranslationHistoryResponse
+from app.database import get_db
 
 router = APIRouter()
 
-# Load ABHA users
-# abha_users_df = pd.read_csv("app/data/abha_mock_users.csv")
-abha_users_df = pd.read_csv("app/data/abha_mock_users.csv", dtype={"phone": str})
-
-
-# Secret key for JWT (in production, use environment variable)
-SECRET_KEY = "your-secret-key-here"
+# Secret key for JWT (load from environment variable)
+SECRET_KEY = os.getenv("SECRET_KEY", "a-very-long-and-secure-default-secret-for-dev-only-please-change-in-production")
 ALGORITHM = "HS256"
-
-# File to store translation history
-HISTORY_FILE = "app/data/translation_history.json"
 
 def create_access_token(abha_id: str):
     """Create JWT access token"""
@@ -43,22 +36,28 @@ def verify_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @router.post("/login", response_model=ABHALoginResponse)
-def abha_login(login_data: ABHALogin):
-    """Mock ABHA login with ABHA ID and phone verification"""
-    print("==== DataFrame Read ====")
-    print(abha_users_df.head())
-    print(abha_users_df.dtypes)
-    # Find user in mock data
-    user_row = abha_users_df[
-        (abha_users_df["abha_id"] == login_data.abha_id) & 
-        (abha_users_df["phone"] == login_data.phone)
-    ]
+def abha_login(login_data: ABHALogin, db: Session = Depends(get_db)):
+    """ABHA login with ABHA ID and phone verification"""
+    # Find user in database
+    user = db.query(User).filter(
+        User.abha_id == login_data.abha_id,
+        User.phone == login_data.phone
+    ).first()
     
-    if user_row.empty:
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid ABHA ID or phone number")
     
-    user_data = user_row.iloc[0].to_dict()
-    abha_user = ABHAUser(**user_data)
+    # Convert SQLAlchemy model to Pydantic model
+    abha_user = ABHAUser(
+        abha_id=user.abha_id,
+        name=user.name,
+        email=user.email,
+        phone=user.phone,
+        dob=user.dob,
+        gender=user.gender,
+        address=user.address,
+        created_at=user.created_at
+    )
     
     # Create access token
     access_token = create_access_token(login_data.abha_id)
@@ -70,61 +69,59 @@ def abha_login(login_data: ABHALogin):
     )
 
 @router.get("/profile", response_model=ABHAUser)
-def get_profile(abha_id: str = Depends(verify_token)):
+def get_profile(abha_id: str = Depends(verify_token), db: Session = Depends(get_db)):
     """Get ABHA user profile"""
-    user_row = abha_users_df[abha_users_df["abha_id"] == abha_id]
+    user = db.query(User).filter(User.abha_id == abha_id).first()
     
-    if user_row.empty:
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    user_data = user_row.iloc[0].to_dict()
-    return ABHAUser(**user_data)
+    return ABHAUser(
+        abha_id=user.abha_id,
+        name=user.name,
+        email=user.email,
+        phone=user.phone,
+        dob=user.dob,
+        gender=user.gender,
+        address=user.address,
+        created_at=user.created_at
+    )
 
 @router.post("/save-translation")
 def save_translation_history(
     translation_data: dict,
-    abha_id: str = Depends(verify_token)
+    abha_id: str = Depends(verify_token),
+    db: Session = Depends(get_db)
 ):
     """Save translation history for authenticated user"""
     
-    # Load existing history
-    history = []
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as f:
-            history = json.load(f)
-    
     # Create new history entry
-    new_entry = {
-        "id": f"TRANS_{len(history) + 1:04d}",
-        "abha_id": abha_id,
-        "source_system": translation_data.get("source_system"),
-        "source_code": translation_data.get("source_code"),
-        "target_system": translation_data.get("target_system"),
-        "target_code": translation_data.get("target_code"),
-        "snomed_ct_code": translation_data.get("snomed_ct_code"),
-        "loinc_code": translation_data.get("loinc_code"),
-        "timestamp": datetime.now().isoformat()
-    }
+    new_entry = TranslationHistory(
+        abha_id=abha_id,
+        source_system=translation_data.get("source_system"),
+        source_code=translation_data.get("source_code"),
+        target_system=translation_data.get("target_system"),
+        target_code=translation_data.get("target_code"),
+        snomed_ct_code=translation_data.get("snomed_ct_code"),
+        loinc_code=translation_data.get("loinc_code"),
+        timestamp=datetime.utcnow()
+    )
     
-    history.append(new_entry)
+    db.add(new_entry)
+    db.commit()
+    db.refresh(new_entry)
     
-    # Save updated history
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump(history, f, indent=2)
-    
-    return {"message": "Translation history saved successfully", "entry_id": new_entry["id"]}
+    return {"message": "Translation history saved successfully", "entry_id": new_entry.id}
 
 @router.get("/translation-history")
-def get_translation_history(abha_id: str = Depends(verify_token)):
+def get_translation_history(
+    abha_id: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Get translation history for authenticated user"""
     
-    if not os.path.exists(HISTORY_FILE):
-        return {"history": []}
+    history = db.query(TranslationHistory).filter(
+        TranslationHistory.abha_id == abha_id
+    ).order_by(TranslationHistory.timestamp.desc()).all()
     
-    with open(HISTORY_FILE, 'r') as f:
-        all_history = json.load(f)
-    
-    # Filter history for current user
-    user_history = [h for h in all_history if h["abha_id"] == abha_id]
-    
-    return {"history": user_history}
+    return {"history": history}
