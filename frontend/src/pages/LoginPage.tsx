@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { AlertCircle, LogIn } from 'lucide-react';
+import { CircleAlert as AlertCircle, LogIn } from 'lucide-react';
 
 const LoginPage: React.FC = () => {
   const [abhaId, setAbhaId] = useState('');
@@ -113,5 +113,3 @@ const LoginPage: React.FC = () => {
 };
 
 export default LoginPage;
-
-export default LoginPage
