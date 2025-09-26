@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, ArrowRight, Code, Database, Save, CheckCircle } from 'lucide-react';
+import { Search, ArrowRight, Code, Database, Save, CircleCheck as CheckCircle } from 'lucide-react';
 import { searchAPI, mappingAPI } from '../services/api';
 
 interface SearchResult {
